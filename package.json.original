@@ -1,0 +1,66 @@
+{
+  "name": "linkhub-project",
+  "version": "1.0.0",
+  "description": "Smart Download Manager with Native Windows Support",
+  "main": "src/main/index.js",
+  "author": {
+    "name": "Abood",
+    "email": "abood@example.com"
+  },
+  "scripts": {
+    "start": "electron . --no-sandbox",
+    "rebuild:win": "electron-rebuild -v 40.6.0 -a x64 -p win32",
+    "dist:linux": "electron-builder --linux",
+    "dist:win": "npm run rebuild:win && electron-builder --win --x64"
+  },
+  "build": {
+    "appId": "com.abood.linkhub",
+    "productName": "LinkHub",
+    "directories": {
+      "output": "dist"
+    },
+    "asar": true,
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        "portable"
+      ],
+      "icon": "assets/icons/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "LinkHub Downloader"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "maintainer": "Abood <abood@example.com>",
+      "category": "Network"
+    }
+  },
+  "dependencies": {
+    "axios": "^1.13.5",
+    "better-sqlite3": "^12.6.2",
+    "bonjour-service": "^1.3.0",
+    "sqlite3": "^6.0.1"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "electron": "^40.6.0",
+    "electron-builder": "^26.8.1"
+  }
+}

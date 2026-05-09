@@ -1,0 +1,24 @@
+# --- استثناء هيكل المجلدات مع إبقائها فارغة ---
+# تجاهل كل شيء داخل resources
+resources/**/*
+
+# استثناء المجلدات لكي يراها Git
+!resources/bin/
+!resources/bin/linux/
+!resources/bin/win/
+
+# تجاهل الملفات الفعلية داخل مجلدات الأنظمة
+resources/bin/linux/*
+resources/bin/win/*
+
+# السماح برفع ملف .gitkeep لإجبار المجلدات على الظهور
+!**/.gitkeep
+
+# --- ملفات ومجلدات عامة للتجاهل ---
+/dist/
+/node_modules/
+/storage/
+/data/linkhub.sqlite
+app_error.log
+*.exe
+*.blockmap

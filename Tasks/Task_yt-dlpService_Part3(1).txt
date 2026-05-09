@@ -1,0 +1,51 @@
+- دوال داخلية خاصة:
+* `_handleProgressLine(line, streamType, file, secondaryFile)`
+    - تتجاهل أي سطر من stderr (إلا إذا احتوى على خطأ واضح يمكن تسجيله).
+    - تبحث عن النمط `|` المفصول، وعند التطابق:
+        * تستخرج: percent, speed, eta, totalBytes, downloadedBytes.
+        * تحديث `file.fileStatus` (وأيضاً `secondaryFile.fileStatus` إن وجد، أو نكتفي بتحديث الأساسي).
+    - يمكن أيضاً كشف وصول التحميل إلى 100% من خلال التحقق من percent === 100 أو نص "[download] 100%"، وعندها يمكن اعتبار status مكتمل (لكن ليس دور الخدمة إرسال إشعار).
+* ملاحظة: بما أن `ProcessEntity` يرسل أسطراً كاملة، فـ `line` جاهز للتحليل دون الحاجة لتجميع.
+
+- القيمة المرجعية: لا تُرجع شيئاً (void) أو تُرجع مرجع العملية (child) لكن الأفضل void والاعتماد على تحديث `file` بالمرجع.
+
+[3] stopDownload(fileId)
+- تستدعي `processManager.terminate(fileId)`.
+- بعد الإنهاء، يمكن جلب `ProcessEntity` من `processManager.getProcessInfo(fileId)` للحصول على آخر السجلات، لكن غير مطلوب.
+- تُرجع `true` إذا كانت العملية موجودة وتم إنهاؤها، `false` خلاف ذلك.
+
+[4] دوال مساعدة (اختيارية لكن مفيدة):
+- `getProgress(fileId)` : تُرجع `fileStatus` للكائن المرتبط (يمكن تخزين الملفات في WeakMap داخل الخدمة مؤقتاً).
+- `getLogs(fileId)` : تستدعي `processManager.getFormattedLogs(fileId)`.
+
+================================================================================
+القسم الخامس: قواعد صارمة للالتزام بمعايير المشروع
+================================================================================
+
+1. **فصل المسؤوليات (Separation of Concerns)**:
+- الخدمة لا تعرف شيئاً عن Electron، ولا تستخدم `ipcMain` أو `BrowserWindow`.
+- لا تقوم بتخزين الملفات في قاعدة البيانات (هذا دور طبقة Controller/Handler مستقبلية).
+- لا تقوم بإرسال تحديثات للواجهة مباشرة (لا `windowManager.broadcast` داخل الخدمة). التحديثات ستتم عبر Handler لاحقاً.
+
+2. **التعامل بالمراجع (By Reference)**:
+- عند استدعاء `startDownload`، يتم تمرير كائن `file` (ومعه `fileStatus`). التعديلات على `file.fileStatus` داخل `_handleProgressLine` يجب أن تنعكس فوراً على الكائن الأصلي الذي يملكه المستدعي (مثلاً Controller).
+
+3. **معالجة الأخطاء**:
+- في `inspectLink`: إذا فشل `executeQuickTask`، يجب رمي خطأ واضح.
+- في `startDownload`: أخطاء التشغيل يتم تسجيلها عبر `errorCentralService.report` فقط (لا تقم بإظهار منبثقات للمستخدم). استخدم `errorCentralService` مع `type: 'YT-DLP'`.
+
+4. **استخدام الخدمات الأخرى**:
+- يُسمح باستيراد:
+* `processManager` (من `./process.manager.service`)
+* `errorCentralService` (من `./error.central.service`)
+* `path`, `os`, `fs` (لمساعدة تحديد المسار)
+- لا تستورد أي خدمات أخرى (مثل deviceManager, connectionService).
+
+5. **نمط Singleton**:
+- في نهاية الملف: `module.exports = new YtDlpService();` (تماماً مثل باقي الخدمات).
+
+================================================================================
+القسم السادس: ملاحظات تنفيذية للمبرمج
+================================================================================
+
+- لتوليد UUID داخل `BaseFile` constructor:

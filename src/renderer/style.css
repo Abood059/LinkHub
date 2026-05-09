@@ -1,0 +1,199 @@
+:root {
+    --bg-color: #1f1f1f;
+    --card-bg: #2b2b2b;
+    --primary-color: #33d17a;
+    --waiting-color: #3584e4;
+    --offline-color: #6b7280;
+    --text-main: #f6f5f4;
+    --text-muted: #c0bfbc;
+    --accent-color: #3584e4;
+    --modal-bg: rgba(20, 20, 20, 0.82);
+    --border-color: #3a3a3a;
+}
+
+body {
+    font-family: 'Cairo', sans-serif;
+    background-color: var(--bg-color);
+    margin: 0; padding: 40px 20px;
+    color: var(--text-main);
+}
+
+.app-container {
+    max-width: 1000px;
+    margin: 0 auto;
+    background: #242424;
+    border: 1px solid #383838;
+    border-radius: 14px;
+    padding: 26px;
+}
+header {
+    text-align: center;
+    margin-bottom: 50px;
+}
+
+/* Header */
+.logo-area { display: flex; align-items: center; justify-content: center; gap: 10px; }
+header h1 { margin: 0; font-size: 32px; font-weight: 700; color: var(--accent-color); }
+.subtitle { color: var(--text-muted); margin-top: 5px; font-size: 14px; }
+.badge { font-size: 11px; background: #363636; color: #f6f5f4; padding: 2px 10px; border-radius: 999px; font-weight: 600; border: 1px solid var(--border-color); }
+
+/* Section Header */
+.section-header { display: flex; align-items: center; gap: 15px; margin-bottom: 25px; }
+.section-title { font-size: 18px; font-weight: 700; margin: 0; position: relative; }
+.count-badge { background: #363636; padding: 2px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid var(--border-color); color: #f6f5f4; }
+
+/* Grid & Items */
+.device-grid { 
+    display: grid; 
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); 
+    gap: 25px; 
+    min-height: 120px; 
+}
+
+.device-item { 
+    display: flex; flex-direction: column; align-items: center; 
+    background: var(--card-bg); padding: 20px 10px; border-radius: 12px;
+    transition: all 0.2s ease;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    border: 1px solid var(--border-color);
+}
+
+.device-item:hover { transform: translateY(-2px); box-shadow: 0 8px 14px rgba(0,0,0,0.28); }
+.device-item.is-streaming {
+    border-color: rgba(51, 209, 122, 0.55);
+    background: #2f3430;
+}
+
+/* الأيقونة والحالات */
+.device-circle {
+    width: 60px; height: 60px; border-radius: 20px; /* شكل rounded square عصري */
+    display: flex; justify-content: center; align-items: center;
+    color: white; font-size: 24px; font-weight: 700;
+    cursor: pointer; position: relative;
+    transition: 0.3s;
+    overflow: hidden;
+}
+
+/* حالة متصل Connected */
+.device-circle.online { 
+    background: #33d17a;
+    box-shadow: 0 6px 12px -4px rgba(51, 209, 122, 0.4);
+}
+
+/* حالة متاح Available (الرادار) */
+.device-circle.available { 
+    background: #3584e4;
+    box-shadow: 0 6px 12px -4px rgba(53, 132, 228, 0.38);
+    animation: pulse-blue 2.2s infinite;
+}
+
+/* حالة غير متصل Offline */
+.device-circle.offline { 
+    background: #5b5b5b;
+    filter: grayscale(1);
+}
+
+.device-name { margin-top: 12px; font-size: 13px; font-weight: 700; color: var(--text-main); text-align: center; }
+.device-status-text { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+
+/* Dividers */
+.divider { height: 1px; background: linear-gradient(to left, transparent, #4a4a4a, transparent); margin: 50px 0; }
+
+/* Modal */
+.modal { 
+    display: none; position: fixed; inset: 0; 
+    background: var(--modal-bg); backdrop-filter: blur(8px); 
+    justify-content: center; align-items: center; z-index: 1000;
+}
+
+.modal-content { 
+    background: #2b2b2b; padding: 40px; border-radius: 16px; width: 380px; 
+    text-align: center; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25);
+    animation: slideUp 0.4s ease-out;
+    border: 1px solid var(--border-color);
+}
+
+.modal-icon { font-size: 40px; margin-bottom: 15px; }
+.modal-content h3 { margin: 0 0 10px; font-size: 22px; }
+.modal-content p { font-size: 14px; color: var(--text-muted); line-height: 1.6; }
+
+.modal-content input { 
+    width: 100%; padding: 15px; margin: 25px 0; 
+    border: 1px solid #4b4b4b; border-radius: 10px; 
+    font-size: 24px; text-align: center; font-weight: 700;
+    color: var(--accent-color); outline: none; transition: 0.3s;
+    background: #1e1e1e;
+}
+
+.modal-content input:focus { border-color: var(--accent-color); background: #202020; }
+
+.modal-actions { display: flex; gap: 10px; }
+.btn { flex: 1; padding: 12px; border: none; border-radius: 12px; cursor: pointer; font-weight: 700; transition: 0.3s; font-family: 'Cairo'; }
+.btn-primary { background: var(--accent-color); color: white; }
+.btn-primary:hover { background: #4b9bf7; }
+.btn-secondary { background: #3a3a3a; color: #d7d7d7; border: 1px solid #4b4b4b; }
+.btn-secondary:hover { background: #454545; }
+
+.spinner {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-top-color: #fff;
+    animation: spin 0.8s linear infinite;
+}
+
+.stream-badge {
+    position: absolute;
+    bottom: -2px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(18, 18, 18, 0.88);
+    color: #33d17a;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid rgba(34, 197, 94, 0.5);
+}
+
+.toast-container {
+    position: fixed;
+    left: 20px;
+    bottom: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 1200;
+}
+
+.toast {
+    background: #2d2d2d;
+    color: #f6f5f4;
+    border: 1px solid #4b4b4b;
+    border-radius: 10px;
+    padding: 10px 12px;
+    min-width: 260px;
+    font-size: 12px;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.toast.error {
+    border-color: rgba(239, 68, 68, 0.45);
+}
+
+.toast.success {
+    border-color: rgba(34, 197, 94, 0.45);
+}
+
+/* Animations */
+@keyframes pulse-blue { 0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); } 70% { box-shadow: 0 0 0 15px rgba(59, 130, 246, 0); } 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes spin { to { transform: rotate(360deg); } }

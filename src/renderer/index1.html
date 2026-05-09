@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>LinkHub - مدير التحميلات</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style>
+        /* تحسين حركة شريط التقدم لتكون انسيابية */
+        .progress-bar-smooth { 
+            transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1); 
+        }
+        /* تأثير اختياري: وميض خفيف للشريط أثناء التحميل */
+        .loading-pulse {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .8; }
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white font-sans p-8">
+
+    <div class="max-w-4xl mx-auto">
+        <header class="mb-10 text-center">
+            <h1 class="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-500">
+                LinkHub Downloader
+            </h1>
+            <p class="text-gray-400 mt-2">مدير التحميلات الذكي عبر Node.js Streams</p>
+        </header>
+
+        <div class="bg-gray-800 p-6 rounded-xl shadow-2xl border border-gray-700 mb-8">
+            <div class="flex gap-4">
+                <input type="text" id="urlInput" placeholder="أدخل رابط التحميل هنا..." 
+                    class="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all text-gray-200">
+                <button id="downloadBtn" class="bg-blue-600 hover:bg-blue-700 px-8 py-3 rounded-lg font-bold transition-all transform active:scale-95 shadow-lg">
+                    تحميل
+                </button>
+            </div>
+        </div>
+
+        <div class="bg-gray-800 rounded-xl shadow-2xl border border-gray-700 overflow-hidden">
+            <div class="p-4 border-b border-gray-700 bg-gray-800/50 flex justify-between items-center">
+                <h2 class="text-lg font-semibold flex items-center gap-2">
+                    <span class="w-3 h-3 bg-green-500 rounded-full"></span>
+                    قائمة التحميلات الحالية
+                </h2>
+            </div>
+            
+            <div id="downloadsList" class="max-h-[500px] overflow-y-auto divide-y divide-gray-700">
+                <div id="emptyState" class="p-12 text-center text-gray-500">
+                    <svg class="mx-auto h-12 w-12 mb-4 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="Path لرمز سحابة أو تحميل" />
+                    </svg>
+                    <p class="italic">لا توجد تحميلات نشطة حالياً</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>

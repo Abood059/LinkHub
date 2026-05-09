@@ -1,0 +1,267 @@
+**ملحق توضيحات هندسية – YtDlpService**  
+(مُكمّل لملفات المهمة رقم 1–4، يُقرأ بالتزامن معها)
+
+---
+
+## تمهيد
+بعد مراجعة ملفات المهمة (`Task_yt-dlpService_Part1` حتى `Part4`) وتفحُّص الكود الفعلي لخدمتي `ProcessManager` و`ErrorCentralService`، تبيّن وجود ثغرات تقنية تمنع المبرمج من الشروع في التنفيذ دون تخمين.  
+هذا الملحق يسدّ تلك الفجوات بدقة متناهية، مع الالتزام الكامل بحدود التصميم الواردة في المهمة الأصلية.  
+كل نقطة مذكورة أدناه تشرح:
+- ما المشكلة.
+- لماذا تشكّل عائقاً.
+- التصحيح/التوضيح المطلوب ليكون التعريف كاملاً.
+
+---
+
+## 1. استدعاء ProcessManager في `startDownload`
+**المشكلة:**  
+نص المهمة توقّف عند عبارة *“استدعاء ProcessManager:”* دون إعطاء الصيغة البرمجية.  
+كود `ProcessManager.execute` الفعلي له التوقيع:
+```js
+execute(id, binPath, args, type = 'generic', onData = null, maxBufferSize = 100)
+```
+
+**المطلوب تطبيقه بالضبط:**  
+داخل `startDownload(file, secondaryFile = null)` تُنفّذ التالي:
+
+```js
+const args = [
+    formatArg,               // الناتج عن منطق الدمج (مثلاً -f 137+140)
+    '--newline',             // ضروري ليُرسل كل سطر منفصلاً
+    '--progress',
+    '--progress-template',
+    '%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.total_bytes)d|%(progress.downloaded_bytes)d',
+    '-o',
+    file.storagePath,
+    file.sourceUrl
+];
+
+// تخزين الملف (والملف الثانوي إن وُجد) في خريطة داخلية
+this._activeFiles.set(file.id, { primary: file, secondary: secondaryFile });
+
+// استدعاء ProcessManager مع id = file.id
+this.processManager.execute(
+    file.id,                     // المعرف الذي يستخدمه ProcessManager لربط العملية
+    this.ytDlpPath,              // مسار ملف yt-dlp التنفيذي
+    args,
+    'yt-dlp',                    // type (يُستخدم في السجلات)
+    (line, streamType) => {      // onData callback
+        this._handleProgressLine(line, streamType, file, secondaryFile);
+    },
+    200                          // maxBufferSize (يمكن تعديله)
+);
+```
+
+**ملاحظة:**  
+المُعرّف `file.id` هو نفسه الذي سيُمرّر لاحقاً إلى `stopDownload(fileId)` والذي بدوره يستدعي `processManager.terminate(fileId)`. بهذا يكون الربط مضموناً.
+
+---
+
+## 2. صيغة قالب التقدم وتحليل السطور
+**المشكلة:**  
+النموذج المذكور في المهمة يستخدم متغيرات `_str` (سلاسل مثل `"10.5MiB"`)، بينما `FileStatus` ينتظر أرقاماً لـ `downloadedBytes` و `totalBytes`.  
+أي محاولة لتحويل هذه السلاسل مباشرة إلى عدد صحيح ستتطلب منطقاً معقّداً لمعالجة الوحدات (KiB, MiB, GiB).
+
+**الحل – استبدال القالب:**  
+نستخدم القالب التالي الذي يُخرج أعداداً صحيحة صافية:
+
+```
+%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.total_bytes)d|%(progress.downloaded_bytes)d
+```
+
+بهذا يكون الناتج النموذجي لسطر:
+```
+100.0%|5.2MiB/s|00:45|104857600|52428800
+```
+
+**التحليل داخل `_handleProgressLine`:**  
+```js
+const parts = line.split('|');
+if (parts.length === 5) {
+    const percentStr = parts[0].replace('%', '');   // "100.0"
+    const speed = parts[1];                          // "5.2MiB/s"
+    const eta = parts[2];                            // "00:45"
+    const totalBytes = parseInt(parts[3], 10);       // 104857600
+    const downloadedBytes = parseInt(parts[4], 10);  // 52428800
+
+    // تحديث fileStatus (بالمرجع)
+    file.fileStatus.percentage = parseFloat(percentStr) || 0;
+    file.fileStatus.speed = speed;
+    file.fileStatus.eta = eta;
+    file.fileStatus.downloadedBytes = downloadedBytes || 0;
+    file.fileStatus.totalBytes = totalBytes || null;
+}
+```
+
+**تطبيق التحديث عند وجود `secondaryFile`:**  
+بمجرّد تحديث `file.fileStatus`، تُنسخ نفس القيم إلى `secondaryFile.fileStatus` إن وُجد:
+```js
+if (secondaryFile) {
+    Object.assign(secondaryFile.fileStatus, file.fileStatus);
+}
+```
+
+---
+
+## 3. تنفيذ `inspectLink` باستخدام `executeQuickTask`
+**المشكلة:**  
+المهمة تقول *“تستخدم `processManager.execute`”*، لكن `execute` مخصّص للعمليات الطويلة التي تُرسل البيانات على دفعات، ولا يعيد وعداً بالنتيجة الكاملة.  
+لتحميل JSON مرة واحدة، الأداة الأنسب هي `processManager.executeQuickTask` التي تعتمد `exec` وتُعيد النص كاملاً.
+
+**المطلوب بالضبط:**
+```js
+async inspectLink(url) {
+    const command = `"${this.ytDlpPath}" -J "${url}"`;
+    // مهلة طويلة لأن سرعة الشبكة قد تكون بطيئة (مثلاً 30 ثانية)
+    const options = { timeout: 30000 };
+    try {
+        const stdout = await this.processManager.executeQuickTask(command, options);
+        const data = JSON.parse(stdout);
+        // ... بناء VideoFile / AudioFile
+    } catch (err) {
+        // تسجيل الخطأ عبر errorCentralService
+        this.errorCentralService.report({
+            type: 'YT-DLP',
+            severity: 'HIGH',
+            message: `inspectLink failed: ${err.message}`,
+            id: url
+        });
+        throw new Error(`فشل فحص الرابط: ${err.message}`);
+    }
+}
+```
+
+**تعبئة الحقول المؤقتة في النماذج:**  
+أثناء إنشاء كائنات `VideoFile` و `AudioFile`، الحقول `name` و `storagePath` لا تكون معروفة بعد. لذا:
+- `name`: استخرج `title` من استجابة JSON، ثم ألحق الامتداد (مثلاً `title + '.' + ext`).
+- `storagePath`: اتركه `null`.  
+ستقوم طبقة التحكم (Controller) لاحقاً بتعيين `storagePath` النهائي قبل استدعاء `startDownload`.
+
+---
+
+## 4. توليد UUID وملء نماذج البيانات
+**المشكلة:**  
+نص المهمة انقطع عند جملة *“لتوليد UUID داخل `BaseFile` constructor:”* دون ذكر الطريقة.
+
+**الحسم:**  
+نستخدم `crypto.randomUUID()` المتاحة في Node.js (بدءاً من الإصدار 14.17).  
+في مُنشئ `BaseFile`:
+```js
+const { randomUUID } = require('crypto');
+// ...
+constructor({ id, name, extension, sourceUrl, storagePath, type } = {}) {
+    this.id = id || randomUUID();
+    this.name = name || '';
+    this.extension = extension || '';
+    this.sourceUrl = sourceUrl || '';
+    this.storagePath = storagePath || null;
+    this.type = type;   // 'video' أو 'audio' يمرر من الصفوف الوارثة
+    this.fileStatus = new FileStatus();
+}
+```
+
+**بالنسبة للـ `VideoFile` و `AudioFile`:**  
+يجب أن يستدعي كل منهما `super()` مع `type` المناسب:
+```js
+// VideoFile
+constructor(opts) {
+    super({ ...opts, type: 'video' });
+    this.formatId = opts.formatId;
+    // ... باقي الخصائص
+}
+// AudioFile
+constructor(opts) {
+    super({ ...opts, type: 'audio' });
+    // ...
+}
+```
+
+---
+
+## 5. إدارة العمليات المتعددة داخل YtDlpService
+**المشكلة:**  
+ذكرت المهمة *“يمكن تخزين الملفات في WeakMap داخل الخدمة مؤقتاً”* دون تفصيل.  
+لكي تعمل دوال `getProgress(fileId)` و `getLogs(fileId)` يجب أن يكون هناك تخزين صريح للمراجع.
+
+**المطلوب:**  
+إضافة خاصية في الكلاس:  
+`this._activeFiles = new Map(); // <fileId, { primary: BaseFile, secondary?: BaseFile }>`  
+
+تضاف الخريطة عند بدء التحميل (كما في القسم 1)، وتُمسح عند استدعاء `stopDownload` أو عند ملاحظة إنهاء التحميل (يمكن ربط حدث exit من ProcessManager لاحقاً، لكن المسح اليدوي يكفي).  
+
+تصبح `getProgress` كالتالي:
+```js
+getProgress(fileId) {
+    const entry = this._activeFiles.get(fileId);
+    return entry?.primary.fileStatus ?? null;
+}
+```
+و `getLogs` تمرر إلى `processManager.getFormattedLogs(fileId)`.
+
+---
+
+## 6. التحقق من صحة الدمج (فيديو + صوت)
+**المشكلة:**  
+المهمة تطلب التأكد من أن أحدهما فيديو والآخر صوت، وإلا رمي خطأ، دون بيان كيفية التمييز.
+
+**الآلية:**  
+بما أن `VideoFile` يُمرر `type = 'video'` و `AudioFile` يُمرر `type = 'audio'` في `super()`، نستطيع:
+```js
+if (secondaryFile) {
+    if (file.type === secondaryFile.type) {
+        throw new Error('يجب أن يكون أحد الملفين فيديو والآخر صوت للدمج.');
+    }
+    formatArg = `-f ${file.formatId}+${secondaryFile.formatId}`;
+} else {
+    formatArg = `-f ${file.formatId}`;
+}
+```
+
+---
+
+## 7. تحديد مسار أداة yt-dlp
+**المشكلة:**  
+قيل *“تحديد مسار أداة yt-dlp (مثل ScrcpyService)”* لكن لم يُذكر مكان الملف ولا كيفية حلّه حسب نظام التشغيل.
+
+**التوجيه:**  
+يجب على YtDlpService أن يحل المسار في المُنشئ (أو عن طريق خاصية خاصة) بطريقة مشابهة لما تفعله `ScrcpyService` في المشروع.  
+مثلاً:
+```js
+constructor() {
+    // افتراض أن ملف yt-dlp موجود في مجلد bin داخل المشروع
+    this.ytDlpPath = process.platform === 'win32'
+        ? path.join(__dirname, '../../bin/yt-dlp.exe')
+        : path.join(__dirname, '../../bin/yt-dlp');
+    // في حال عدم وجوده، يمكن تجربة الاعتماد على PATH
+    // هذا القرار يترك للمبرمج حسب هيكل المشروع الفعلي
+}
+```
+المهم أن تُستخدم خاصية `this.ytDlpPath` في كل الأوامر لضمان توحيد المرجع.
+
+---
+
+## 8. ملاحظات إضافية (تلزم المبرمج)
+
+- **`_handleProgressLine` وتجاهل stderr:**  
+  الدالة ستستقبل وسيط `streamType`. أي سطر قادم من stderr يُسجَّل فقط عبر `errorCentralService` (دون تعطيل التحميل) ما لم يكن خطأً جسيماً.  
+  ```js
+  if (streamType === 'stderr') {
+      this.errorCentralService.report({ type:'YT-DLP', severity:'LOW', message: line });
+      return;
+  }
+  ```
+
+- **معالجة اكتمال التحميل:**  
+  عندما تصل `file.fileStatus.percentage` إلى 100 يمكن اعتبار العملية مكتملة، لكن **دور الخدمة لا يتجاوز** تحديث حالة `fileStatus`؛ تنبيه الواجهة أو قاعدة البيانات يظل من اختصاص الطبقة الأعلى.
+
+- **التزامن:**  
+  الخدمة لا تفرض حداً أقصى للتحميلات المتوازية؛ `ProcessManager` يدير عدة عمليات باستخدام معرفات مختلفة. يمكن استدعاء `startDownload` لمئات الملفات دون تعارض.
+
+- **الاعتماديات:**  
+  لا يُسمح باستيراد أي خدمات غير المذكورة (`processManager`, `errorCentralService`, وحدات Node الأصلية `path`, `os`, `fs`).  
+  أي حاجة لـ `windowManager` أو `deviceManager` تعني خرقاً للفصل.
+
+---
+ملاحظة : ملف التنفيذي للاداة موجود في مجلد الريسوسيز و هناك نسخة منه للينكس و واحدة لويندوز لذا يجب ان تون المسارات ديناميكية حتى تبقا سليمة عند عملية التحزيم او عند نقل المشروع لبيئة تشغيل مختلفة
+## خاتمة
+باعتماد التوضيحات أعلاه، تصبح المهمة مكتملة من الناحية الهندسية، وجاهزة للتنفيذ دون لبس. على المبرمج الالتزام حرفياً بهذه الإضافات كما لو كانت جزءاً من المستندات الأصلية.

@@ -1,0 +1,34 @@
+
+================================================================================
+القسم الرابع: تفاصيل الدوال وسلوكها المطلوب
+================================================================================
+
+[1] inspectLink(url)
+    - الوظيفة: جلب معلومات الفيديو/القائمة والصيغ المتاحة بدون تحميل.
+    - تستخدم `processManager.execute` لأن الأمر ياخذ وقت بنائا على سرعة الانترنت.
+    - الأمر: `yt-dlp -J <url>` (طباعة JSON).
+    - تعالج JSON وتبني منها:
+        * قائمة من VideoFile (للصيغ التي تحتوي على فيديو، حتى لو كانت بدون صوت).
+        * قائمة من AudioFile (للصيغ الصوتية البحتة).
+    - ملاحظة: يمكن أيضاً تجميع الصيغ المركبة (التي تحوي فيديو وصوت) ضمن VideoFile مع جعل formatId يمثل الصيغة المركبة.
+    - القيمة المرجعية: `Promise<{ videos: VideoFile[], audios: AudioFile[] }>`.
+    - في حال فشل الأمر أو كان JSON غير صالح، يجب أن تمرر الخدمة خطأً واضحاً لملف خدمة الاخطاء "error.central.service.js"
+
+[2] startDownload(file, secondaryFile = null)
+    - الوظيفة: بدء تحميل الوسائط، مع دعم الدمج بين فيديو وصوت.
+    - المعاملات:
+        * `file` (VideoFile | AudioFile) : الملف الأساسي.
+        * `secondaryFile` (AudioFile | VideoFile | null) : إذا أُريد تحميل مدمج.
+    - آلية بناء الوسائط (Arguments):
+        - حالة عدم وجود secondaryFile:
+            formatArg = `-f ${file.formatId}`
+        - حالة وجود secondaryFile (يجب أن يكون أحدهما فيديو والآخر صوت):
+            formatArg = `-f ${file.formatId}+${secondaryFile.formatId}`
+            (يُفضل التأكد من أن أحدهما فيديو والآخر صوت، وإلا تُرمى خطأ).
+    - خيارات إضافية ثابتة:
+        * `--newline`         : لضمان خروج كل سطر منفصلاً (ضروري لعمل ProcessEntity).
+        * `--progress`        : تفعيل طباعة التقدم.
+        * `--progress-template` : لتنسيق سهل التحليل. **يجب استخدام النموذج التالي بالضبط**:
+          `"%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress._total_bytes_str)s|%(progress._downloaded_bytes_str)s"`
+        * `-o`                : متبوعاً بـ `file.storagePath`.
+    - استدعاء ProcessManager:
