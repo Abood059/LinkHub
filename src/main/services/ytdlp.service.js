@@ -26,11 +26,12 @@ class YtDlpService {
      * @returns {Promise<{ videos: VideoFile[], audios: AudioFile[] }>}
      */
     async inspectLink(url) {
-        const command = `"${this.ytDlpPath}" -J "${url}"`;
+        // Fix: Use executeQuickTaskArray for secure command execution instead of string concatenation
+        const args = ['-J', url];
         const options = { timeout: 30000 };
         
         try {
-            const stdout = await this.processManager.executeQuickTask(command, options);
+            const stdout = await this.processManager.executeQuickTaskArray(this.ytDlpPath, args, options);
             const data = JSON.parse(stdout);
             
             const videos = [];

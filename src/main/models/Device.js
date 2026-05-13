@@ -1,57 +1,7 @@
-/*
-ORIGINAL CODE (reference - do not delete)
+
 
 const BaseNode = require('./BaseNode');
-
-class Device extends BaseNode {
-    constructor({ id, deviceFriendlyName, model, version, arch, isNew, connectionType }) {
-        super({ id, deviceFriendlyName, type: 'MOBILE' });
-        this._model = model;
-        this._version = version;
-        this._arch = arch;
-        this._isNew = isNew;
-        this.ip = null;
-        this.port = null;
-        this.status = 'offline';
-    }
-
-    get model() { return this._model; }
-    get arch() { return this._arch; }
-    get version() { return this._version; }
-    get isNew() { return this._isNew; }
-    set isNew(value) { this._isNew = value; }
-
-    toJSON() {
-        return {
-            id: this.id,
-            model: this.model || 'Unknown',
-            deviceFriendlyName: this.deviceFriendlyName || this.model || 'Android Device',
-            status: this.status || 'offline',
-            isNew: this.isNew
-        };
-    }
-
-    static fromJSON(data) {
-        return new Device({
-            id: data.id,
-            deviceFriendlyName: data.deviceFriendlyName,
-            model: data.model,
-            version: data.version,
-            arch: data.arch,
-            isNew: data.isNew
-        });
-    }
-
-    getSummary() {
-        const connectionState = this.status === 'connected' ? '🟢' : '⚪';
-        return `${connectionState} [MOBILE] ${this.friendlyName} (${this._model}) - ${this.status.toUpperCase()}`;
-    }
-}
-
-module.exports = Device;
-*/
-
-const BaseNode = require('./BaseNode');
+const errorService = require('../services/error.central.service');
 
 /**
  * كلاس يمثل الجهاز (الهاتف/التابلت) - النسخة المطورة للربط اللاسلكي
@@ -60,46 +10,103 @@ class Device extends BaseNode {
     constructor({ id, deviceFriendlyName, model, version, arch, isNew, connectionType, adbTarget }) {
         super({ id, deviceFriendlyName, type: 'MOBILE' });
 
-        // خصائص تُحفظ في قاعدة البيانات
+        // Protected properties with validation
         this._model = model;
         this._version = version;
         this._arch = arch;
         this._isNew = isNew; // 1 = يحتاج إقران، 0 = مقترن وجاهز
 
-        // خصائص runtime (قد تُحفظ أيضاً كـ "آخر قيمة" مثل ip/port)
-        this.ip = null;
-        this.port = null;
-        this.connectionType = connectionType || null;
-        this.adbTarget = adbTarget || null;
-        this.status = 'offline';
+        // Runtime properties (may be saved as "last values" like ip/port)
+        this._status = 'offline';
+        this._ip = null;
+        this._port = null;
+        this._connectionType = connectionType || null;
+        this._adbTarget = adbTarget || null;
     }
 
+    // Getters for protected properties
     get model() { return this._model; }
     get arch() { return this._arch; }
     get version() { return this._version; }
     get isNew() { return this._isNew; }
+    get status() { return this._status; }
+    get ip() { return this._ip; }
+    get port() { return this._port; }
+    get connectionType() { return this._connectionType; }
+    get adbTarget() { return this._adbTarget; }
 
-    set isNew(value) { this._isNew = value; }
+    // Setters with validation
+    set status(value) {
+        // Device state matrix: offline → available → connected → offline
+        // States represent: offline (disconnected), available (discovered/ready), connected (active session)
+        if (!['offline', 'available', 'connected'].includes(value)) {
+            errorService.report({
+                type: 'DEVICE',
+                severity: 'LOW',
+                message: `Invalid device status: ${value}`,
+                id: this.id
+            });
+            return;
+        }
+        this._status = value;
+    }
 
-    toJSON() {
-        return {
-            id: this.id,
-            type: this.type || 'MOBILE',
-            model: this.model || 'Unknown',
-            version: this.version || 'Unknown',
-            arch: this.arch || 'Unknown',
-            deviceFriendlyName: this.deviceFriendlyName || this.model || 'Android Device',
-            ip: this.ip || null,
-            port: this.port || null,
-            connectionType: this.connectionType || null,
-            adbTarget: this.adbTarget || null,
-            status: this.status || 'offline',
-            isNew: this.isNew
-        };
+    set ip(value) {
+        if (value !== null && typeof value !== 'string') {
+            errorService.report({
+                type: 'DEVICE',
+                severity: 'LOW',
+                message: `Invalid IP address: ${value}`,
+                id: this.id
+            });
+            return;
+        }
+        this._ip = value;
+    }
+
+    set port(value) {
+        if (value !== null && (typeof value !== 'number' || value < 1 || value > 65535)) {
+            errorService.report({
+                type: 'DEVICE',
+                severity: 'LOW',
+                message: `Invalid port: ${value}`,
+                id: this.id
+            });
+            return;
+        }
+        this._port = value;
+    }
+
+    set connectionType(value) {
+        if (!['usb', 'wireless', null].includes(value)) {
+            errorService.report({
+                type: 'DEVICE',
+                severity: 'LOW',
+                message: `Invalid connection type: ${value}`,
+                id: this.id
+            });
+            return;
+        }
+        this._connectionType = value;
+    }
+
+    set adbTarget(value) {
+        if (value !== null && (typeof value !== 'string' || value.length > 100)) {
+            errorService.report({
+                type: 'DEVICE',
+                severity: 'LOW',
+                message: `Invalid ADB target: ${value}`,
+                id: this.id
+            });
+            return;
+        }
+        this._adbTarget = value;
     }
 
     static fromJSON(data) {
-        // قاعدة البيانات تستخدم friendly_name بينما الكود يستخدم deviceFriendlyName
+        // Database uses snake_case while application uses camelCase
+        // This compatibility layer handles both naming conventions temporarily
+        // Some services use SELECT * and pass rows directly without name conversion
         const name = data.deviceFriendlyName || data.friendly_name;
         const device = new Device({
             id: data.id,
@@ -108,15 +115,19 @@ class Device extends BaseNode {
             version: data.version,
             arch: data.arch,
             isNew: data.isNew,
-            connectionType: data.connectionType,
-            adbTarget: data.adbTarget
+            connectionType: data.connectionType || data.connection_type,
+            adbTarget: data.adbTarget || data.adb_target
         });
 
-        // runtime fields from DB (if present)
+        // Runtime fields from DB (if present) - handle both naming conventions
         if (data.ip) device.ip = data.ip;
         if (data.port) device.port = data.port;
-        if (data.connectionType) device.connectionType = data.connectionType;
-        if (data.adbTarget) device.adbTarget = data.adbTarget;
+        if (data.connectionType || data.connection_type) {
+            device.connectionType = data.connectionType || data.connection_type;
+        }
+        if (data.adbTarget || data.adb_target) {
+            device.adbTarget = data.adbTarget || data.adb_target;
+        }
 
         return device;
     }

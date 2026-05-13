@@ -5,13 +5,18 @@ const fs = require('fs');
 
 // استيراد مدير العمليات لتنفيذ أوامر ADB
 const processManager = require('./process.manager.service');
+const errorService = require('./error.central.service');
 
 class ConnectionService extends EventEmitter {
     constructor() {
         super();
 
-        // تحديد بيئة العمل لجلب المسارات الصحيحة للـ Binaries
-        this.isDev = true; 
+        // Auto-detect development mode using Electron's app.isPackaged (consistent with ScrcpyService)
+        let electronApp;
+        try { 
+            electronApp = require('electron').app; 
+        } catch {}
+        this.isDev = electronApp ? !electronApp.isPackaged : true; 
 
         this.baseBinPath = this.isDev
             ? path.join(__dirname, '../../../resources/bin')
@@ -21,6 +26,19 @@ class ConnectionService extends EventEmitter {
         this.adbPath = this.getAdbPath();
         this._adbWatcherTimer = null;
         this._adbScanInProgress = false;
+        this._bonjourBrowsers = []; // Track Bonjour browsers for cleanup
+    }
+
+    /**
+     * Fix: Input sanitization to prevent command injection attacks
+     * Removes dangerous characters and patterns from device serial numbers
+     */
+    _sanitizeSerialNumber(serial) {
+        if (!serial || typeof serial !== 'string') return '';
+        
+        // Remove dangerous characters that could enable command injection
+        // Remove: ; & | ` $ ( ) { } [ ] < > " ' and whitespace
+        return serial.replace(/[;&|`$(){}[<>"'\s]/g, '').trim();
     }
 
     /**
@@ -37,7 +55,12 @@ class ConnectionService extends EventEmitter {
         const fullPath = this.resolveAdbPath(platform);
 
         if (!fs.existsSync(fullPath)) {
-            console.error(`[ConnectionService] CRITICAL: ADB binary not found at ${fullPath}`);
+            errorService.report({
+                type: 'CONNECTION',
+                severity: 'CRITICAL',
+                message: `ADB binary not found at ${fullPath}`,
+                id: 'system'
+            });
             return null;
         }
 
@@ -45,7 +68,12 @@ class ConnectionService extends EventEmitter {
             try {
                 fs.chmodSync(fullPath, 0o755);
             } catch (e) {
-                console.warn("[ConnectionService] Permission fix failed:", e.message);
+                errorService.report({
+                    type: 'CONNECTION',
+                    severity: 'LOW',
+                    message: `Permission fix failed: ${e.message}`,
+                    id: 'system'
+                });
             }
         }
 
@@ -56,27 +84,87 @@ class ConnectionService extends EventEmitter {
      * جلب معلومات الهوية للجهاز
      */
     async getDeviceInfo(serial) {
+        // Return null if ADB path is not available (ADB cannot be executed)
         if (!this.adbPath) return null;
 
-        const getProp = async (prop) => {
-            try {
-                const output = await processManager.executeQuickTask(`"${this.adbPath}" -s ${serial} shell getprop ${prop}`, { timeout: 2000 });
-                return output ? output.trim() : "Unknown";
-            } catch (e) {
-                return "Unknown";
-            }
-        };
+        // Fix: Sanitize serial number to prevent command injection
+        const sanitizedSerial = this._sanitizeSerialNumber(serial);
+        if (!sanitizedSerial) {
+            errorService.report({
+                type: 'CONNECTION',
+                severity: 'HIGH',
+                message: `Invalid or dangerous serial number: ${serial}`,
+                id: serial || 'unknown'
+            });
+            return null;
+        }
 
         try {
-            const [model, version, arch] = await Promise.all([
-                getProp('ro.product.model'),
-                getProp('ro.build.version.release'),
-                getProp('ro.product.cpu.abi')
-            ]);
+            // Use unified ADB command to fetch all properties in one call
+            // This allows proper distinction between total failure and partial data
+            const output = await processManager.executeQuickTaskArray(
+                this.adbPath,
+                ['-s', sanitizedSerial, 'shell', 'getprop', 'ro.product.model', 'ro.build.version.release', 'ro.product.cpu.abi'],
+                { timeout: 2000 }
+            );
 
-            return { id: serial, model, version, arch };
+            // Check for null return from ProcessManager
+            if (output === null) {
+                errorService.report({
+                    type: 'CONNECTION',
+                    severity: 'HIGH',
+                    message: 'ProcessManager returned null for device info query',
+                    id: sanitizedSerial
+                });
+                return null;
+            }
+
+            // Check for total failure: completely empty output means shell command failed
+            if (!output || output.trim().length === 0) {
+                errorService.report({
+                    type: 'CONNECTION',
+                    severity: 'HIGH',
+                    message: `ADB shell returned completely empty output for ${sanitizedSerial}`,
+                    id: sanitizedSerial
+                });
+                return null;
+            }
+
+            // Parse the unified output - each property appears on its own line
+            const lines = output.trim().split('\n');
+            const properties = {};
+            
+            // Extract property values from the unified command output
+            // Expected format: [ro.product.model]: [value]
+            lines.forEach(line => {
+                const match = line.match(/^\[([^\]]+)\]:\s*(.*)$/);
+                if (match) {
+                    const propName = match[1];
+                    const propValue = match[2].trim();
+                    properties[propName] = propValue || "Unknown";
+                }
+            });
+
+            // Build device info object, using "Unknown" for missing properties
+            const deviceInfo = {
+                id: sanitizedSerial,
+                model: properties['ro.product.model'] || "Unknown",
+                version: properties['ro.build.version.release'] || "Unknown", 
+                arch: properties['ro.product.cpu.abi'] || "Unknown"
+            };
+
+            // Return device info object whenever the unified command succeeded (returned any output)
+            // Missing properties are already handled with "Unknown" values
+            return deviceInfo;
+
         } catch (e) {
-            console.error(`[ConnectionService] Failed to get device info for ${serial}`);
+            // Return null for total connection failure: exception, timeout, or complete shell failure
+            errorService.report({
+                type: 'CONNECTION',
+                severity: 'HIGH',
+                message: `Total ADB shell failure for ${sanitizedSerial}: ${e.message}`,
+                id: sanitizedSerial
+            });
             return null;
         }
     }
@@ -90,27 +178,54 @@ class ConnectionService extends EventEmitter {
         const suppressTimeoutLog = options.suppressTimeoutLog !== false;
 
         try {
-            const stdout = await processManager.executeQuickTask(`"${this.adbPath}" devices`, { timeout: timeoutMs });
-            const lines = stdout.split('\n');
-            const rawDevicesData = [];
+            // Fix: Use array arguments instead of string concatenation to prevent command injection
+            const stdout = await processManager.executeQuickTaskArray(
+                this.adbPath,
+                ['devices'],
+                { timeout: timeoutMs }
+            );
 
+            // Check for null return from ProcessManager
+            if (stdout === null) {
+                errorService.report({
+                    type: 'CONNECTION',
+                    severity: 'HIGH',
+                    message: 'ProcessManager returned null for devices list query',
+                    id: 'system'
+                });
+                return { success: false, devices: [] };
+            }
+            const lines = stdout.split('\n');
+            
+            // Extract all valid device serials first
+            const deviceSerials = [];
             for (let i = 1; i < lines.length; i++) {
                 const line = lines[i].trim();
                 if (!line || line.includes('List of devices')) continue;
 
                 const [serial, state] = line.split(/\s+/);
-
                 if (serial && state === 'device') {
-                    const info = await this.getDeviceInfo(serial);
-                    if (info) {
-                        rawDevicesData.push({
-                            ...info,
-                            status: 'connected',
-                            connectionType: 'usb'
-                        });
-                    }
+                    deviceSerials.push(serial);
                 }
             }
+
+            // Fix: Execute all device info requests in parallel using Promise.all()
+            // This eliminates the sequential bottleneck and reduces total execution time
+            const deviceInfoPromises = deviceSerials.map(async (serial) => {
+                const info = await this.getDeviceInfo(serial);
+                if (info) {
+                    return {
+                        ...info,
+                        status: 'connected',
+                        connectionType: 'usb'
+                    };
+                }
+                return null;
+            });
+
+            const deviceInfos = await Promise.all(deviceInfoPromises);
+            const rawDevicesData = deviceInfos.filter(info => info !== null);
+
             return { success: true, devices: rawDevicesData };
         } catch (error) {
             const isKilledByTimeout =
@@ -118,7 +233,12 @@ class ConnectionService extends EventEmitter {
                 error?.error?.code === null ||
                 String(error?.stderr || '').toLowerCase().includes('killed');
             if (!(suppressTimeoutLog && isKilledByTimeout)) {
-                console.error("[ConnectionService] ADB Error:", error);
+                errorService.report({
+                    type: 'CONNECTION',
+                    severity: 'MEDIUM',
+                    message: `ADB Error: ${error.message || error}`,
+                    id: 'system'
+                });
             }
             return { success: false, devices: [] };
         }
@@ -126,45 +246,59 @@ class ConnectionService extends EventEmitter {
 
     async smartConnect(ip, port, deviceId) {
         const result = await this.connectDevice(ip, port, deviceId);
+        
+        // Use only result.raw for pattern matching (not combined with message)
         const raw = String(result.raw || '').toLowerCase();
-        const msg = String(result.message || '').toLowerCase();
-        const text = `${raw}\n${msg}`;
-
-        const connected =
-            result.success ||
-            text.includes('already connected') ||
-            text.includes('connected to');
-
-        if (connected) {
-            return {
-                success: true,
-                status: 'connected',
-                message: 'Connected successfully',
-                target: `${ip}:${port}`,
-                raw: result.raw
-            };
+        
+        let status;
+        let message;
+        
+        // Priority 1 - Success Patterns
+        if (result.success || raw.includes('connected to') || raw.includes('already connected')) {
+            status = 'connected';
+            message = 'Connected successfully';
         }
-
-        const networkFailure =
-            text.includes('timed out') ||
-            text.includes('timeout') ||
-            text.includes('no route to host') ||
-            text.includes('network is unreachable');
-
-        if (networkFailure) {
-            return {
-                success: false,
-                status: 'failed_network',
-                message: 'Connection timed out',
-                target: `${ip}:${port}`,
-                raw: result.raw
-            };
+        // Priority 2 - Authorization Patterns (check before network patterns)
+        else if (raw.includes('unauthorized') || raw.includes('authorizing')) {
+            status = 'unauthorized';
+            message = 'Device is unauthorized. Please allow USB debugging on the device screen.';
         }
-
+        // Priority 3 - Device Offline Pattern
+        else if (raw.includes('offline')) {
+            status = 'failed_offline';
+            message = 'Device is offline. Check the device screen and ensure ADB debugging is enabled and the device is awake.';
+        }
+        // Priority 4 - Network-Specific Patterns
+        else if (raw.includes('timed out') || raw.includes('timeout')) {
+            status = 'failed_timeout';
+            message = 'Connection timed out';
+        }
+        else if (raw.includes('refused')) {
+            status = 'failed_refused';
+            message = 'Connection was actively refused by the target device';
+        }
+        else if (raw.includes('no route to host') || 
+                 raw.includes('network is unreachable') || 
+                 raw.includes('host is unreachable') ||
+                 (raw.includes('cannot connect to') && !raw.includes('refused'))) {
+            status = 'failed_unreachable';
+            message = 'Network is unreachable - no route to host';
+        }
+        // Priority 5 - Generic Failure
+        else if (raw.includes('failed') || raw.includes('error')) {
+            status = 'needs_pairing';
+            message = 'Direct connect failed; pairing required';
+        }
+        // Priority 6 - Unknown (fallback case)
+        else {
+            status = 'failed_unknown';
+            message = 'Unrecognized error occurred during connection attempt';
+        }
+        
         return {
-            success: false,
-            status: 'needs_pairing',
-            message: 'Direct connect failed; pairing required',
+            success: status === 'connected',
+            status: status,
+            message: message,
             target: `${ip}:${port}`,
             raw: result.raw
         };
@@ -215,8 +349,16 @@ class ConnectionService extends EventEmitter {
      * رادار البحث اللاسلكي (Bonjour)
      */
     startWirelessScanner() {
-        console.log("[ConnectionService] البحث عن خدمات ADB Connect...");
+        errorService.report({
+            type: 'CONNECTION',
+            severity: 'INFO',
+            message: 'Starting wireless ADB Connect scanner',
+            id: 'system'
+        });
         const browser = this.bonjour.find({ type: 'adb-tls-connect' });
+        
+        // Fix: Track browser for cleanup to prevent resource leaks
+        this._bonjourBrowsers.push(browser);
 
         browser.on('up', (service) => {
             const serial = this._extractSerial(service.name);
@@ -241,8 +383,16 @@ class ConnectionService extends EventEmitter {
      * رادار طلبات الإقران (Pairing)
      */
     startPairingScanner() {
-        console.log("[ConnectionService] البحث عن طلبات Pairing...");
+        errorService.report({
+            type: 'CONNECTION',
+            severity: 'INFO',
+            message: 'Starting wireless ADB Pairing scanner',
+            id: 'system'
+        });
         const pairingBrowser = this.bonjour.find({ type: 'adb-tls-pairing' });
+        
+        // Fix: Track browser for cleanup to prevent resource leaks
+        this._bonjourBrowsers.push(pairingBrowser);
 
         pairingBrowser.on('up', (service) => {
             const serial = this._extractSerial(service.name);
@@ -265,10 +415,15 @@ class ConnectionService extends EventEmitter {
      * تنفيذ الإقران اللاسلكي
      */
     async pairDevice(ip, port, code, deviceId) {
-        console.log(`[Pairing] Sending pair command to ${ip}:${port}...`);
+        errorService.report({
+            type: 'CONNECTION',
+            severity: 'INFO',
+            message: `Sending pair command to ${ip}:${port}...`,
+            id: deviceId
+        });
         
         const result = await processManager.executeAndWatch(
-            `pair-${deviceId}`,
+            `connection-pair-${deviceId}`,
             this.adbPath,
             ['pair', `${ip}:${port}`, code],
             'Successfully paired',
@@ -286,10 +441,15 @@ class ConnectionService extends EventEmitter {
      * تنفيذ الاتصال اللاسلكي
      */
     async connectDevice(ip, port, deviceId) {
-        console.log(`[Connect] Connecting to ${ip}:${port}...`);
+        errorService.report({
+            type: 'CONNECTION',
+            severity: 'INFO',
+            message: `Connecting to ${ip}:${port}...`,
+            id: deviceId
+        });
 
         const result = await processManager.executeAndWatch(
-            `connect-${deviceId}`,
+            `connection-connect-${deviceId}`,
             this.adbPath,
             ['connect', `${ip}:${port}`],
             'connected to',
@@ -307,6 +467,60 @@ class ConnectionService extends EventEmitter {
     _extractSerial(serviceName) {
         const match = serviceName.match(/^adb-([^.]+)/);
         return match ? match[1] : serviceName;
+    }
+
+    /**
+     * Fix: Proper cleanup mechanism to prevent resource leaks
+     * Clears all active intervals, destroys Bonjour instances, and removes event listeners
+     * Ensures the service leaves zero footprint when stopped
+     */
+    destroy() {
+        errorService.report({
+            type: 'CONNECTION',
+            severity: 'INFO',
+            message: 'Cleaning up ConnectionService resources...',
+            id: 'system'
+        });
+        
+        // Clear all active intervals to prevent CPU usage
+        if (this._adbWatcherTimer) {
+            clearInterval(this._adbWatcherTimer);
+            this._adbWatcherTimer = null;
+        }
+        
+        // Destroy all Bonjour browsers to release network sockets and memory
+        this._bonjourBrowsers.forEach(browser => {
+            try {
+                if (browser && typeof browser.stop === 'function') {
+                    browser.stop();
+                }
+            } catch (e) {
+                console.error('[ConnectionService] Error stopping Bonjour browser:', e.message);
+            }
+        });
+        this._bonjourBrowsers = [];
+        
+        // Destroy the main Bonjour instance to close all network connections
+        try {
+            if (this.bonjour && typeof this.bonjour.destroy === 'function') {
+                this.bonjour.destroy();
+            }
+        } catch (e) {
+            console.error('[ConnectionService] Error destroying Bonjour instance:', e.message);
+        }
+        
+        // Remove all event listeners to eliminate dangling object references
+        this.removeAllListeners();
+        
+        // Reset state variables
+        this._adbScanInProgress = false;
+        
+        errorService.report({
+            type: 'CONNECTION',
+            severity: 'LOW',
+            message: 'ConnectionService cleanup completed successfully',
+            id: 'system'
+        });
     }
 }
 

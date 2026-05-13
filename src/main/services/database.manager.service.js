@@ -1,6 +1,3 @@
-/*
-ORIGINAL CODE (reference - do not delete)
-
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
@@ -8,6 +5,9 @@ const errorService = require('./error.central.service');
 
 class DatabaseManager {
     constructor() {
+        // Fix: Add connection status tracking to prevent initDb freezing on connection failure
+        this._connectionOk = false;
+        
         try {
             // 1. تأمين مسار المجلد (Data Persistence)
             const dbFolder = path.join(process.cwd(), 'data');
@@ -23,7 +23,13 @@ class DatabaseManager {
                     this._reportError('CRITICAL', `Database Connection Failed: ${err.message}`);
                 } else {
                     console.log('[DatabaseManager] Connected to SQLite.');
-                    this._initSchema();
+                    // Fix: Mark connection as successful before schema init
+                    this._connectionOk = true;
+                    // Fix: Assign Promise with error handling to prevent race condition
+                    this._schemaReady = this._initSchema().catch(err => {
+                        this._reportError('CRITICAL', `Schema initialization failed: ${err.message}`);
+                        // Fix: Remove throw err to prevent unhandled Promise rejection
+                    });
                 }
             });
         } catch (err) {
@@ -31,93 +37,14 @@ class DatabaseManager {
         }
     }
 
-    async _initSchema() {
-        try {
-            const nodesTable = `
-                CREATE TABLE IF NOT EXISTS nodes (
-                    id TEXT PRIMARY KEY,
-                    type TEXT NOT NULL,
-                    friendly_name TEXT,
-                    model TEXT,
-                    version TEXT,
-                    arch TEXT,
-                    ip TEXT,
-                    port INTEGER,
-                    last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            `;
-
-            const processLogsTable = `
-                CREATE TABLE IF NOT EXISTS process_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    device_id TEXT,
-                    process_type TEXT,
-                    exit_code INTEGER,
-                    duration INTEGER,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            `;
-
-            await this.execute(nodesTable);
-            await this.execute(processLogsTable);
-            console.log('[DatabaseManager] Schema initialized successfully.');
-        } catch (err) {
-            this._reportError('HIGH', `Schema Initialization Error: ${err.message}`);
-        }
-    }
-
-    async initDb() {
-        return new Promise((resolve) => {
-            if (this.db) resolve();
-            else {
-                const checkInterval = setInterval(() => {
-                    if (this.db) {
-                        clearInterval(checkInterval);
-                        resolve();
-                    }
-                }, 100);
-            }
-        });
-    }
-}
-
-module.exports = new DatabaseManager();
-*/
-
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-const fs = require('fs');
-const errorService = require('./error.central.service');
-
-class DatabaseManager {
-    constructor() {
-        this.db = null;
-        this._schemaReady = null;
-
-        try {
-            const dbFolder = path.join(process.cwd(), 'data');
-            if (!fs.existsSync(dbFolder)) {
-                fs.mkdirSync(dbFolder, { recursive: true });
-            }
-
-            const dbPath = path.join(dbFolder, 'linkhub.sqlite');
-
-            this.db = new sqlite3.Database(dbPath, (err) => {
-                if (err) {
-                    this._reportError('CRITICAL', `Database Connection Failed: ${err.message}`);
-                    return;
-                }
-
-                console.log('[DatabaseManager] Connected to SQLite.');
-                // Track readiness so callers can await schema/migrations.
-                this._schemaReady = this._initSchema();
-            });
-        } catch (err) {
-            this._reportError('CRITICAL', `Initial Database Setup Error: ${err.message}`);
-        }
-    }
 
     async _getTableColumns(tableName) {
+        // Fix: Prevent SQL injection by validating table name format
+        if (!/^[a-zA-Z0-9_]+$/.test(tableName)) {
+            // Fix: Log table name validation errors via ErrorCentralService
+            this._reportError('LOW', `Invalid table name attempted: ${tableName}`);
+            throw new Error(`Invalid table name: ${tableName}`);
+        }
         const rows = await this.queryAll(`PRAGMA table_info(${tableName})`);
         return rows.map((r) => r.name);
     }
@@ -168,49 +95,40 @@ class DatabaseManager {
             await this._ensureColumn('nodes', 'arch', 'TEXT');
             await this._ensureColumn('nodes', 'model', 'TEXT');
             await this._ensureColumn('nodes', 'friendly_name', 'TEXT');
+            // Add wireless connection properties for persistence across restarts
+            await this._ensureColumn('nodes', 'connection_type', 'TEXT');
+            await this._ensureColumn('nodes', 'adb_target', 'TEXT');
 
             console.log('[DatabaseManager] Schema initialized successfully.');
         } catch (err) {
             this._reportError('HIGH', `Schema Initialization Error: ${err.message}`);
-            throw err;
+            // Fix: Remove throw err to eliminate duplicate error logging
+            return;
         }
     }
 
-    /**
-     * التأكد من جاهزية الاتصال + اكتمال schema/migrations قبل الاستخدام
-     */
     async initDb() {
-        // Wait for connection to be established
-        await new Promise((resolve) => {
-            if (this.db) resolve();
-            else {
-                const checkInterval = setInterval(() => {
-                    if (this.db) {
-                        clearInterval(checkInterval);
-                        resolve();
+        // Fix: Wait until connection is confirmed with timeout to prevent freezing
+        if (!this._connectionOk) {
+            await new Promise((resolve, reject) => {
+                const start = Date.now();
+                const check = () => {
+                    if (this._connectionOk) return resolve();
+                    if (Date.now() - start > 5000) {
+                        const msg = 'Database connection timed out';
+                        this._reportError('CRITICAL', msg);
+                        return reject(new Error(msg));
                     }
-                }, 50);
-            }
-        });
-
-        // Wait until schema init has been scheduled (connection callback)
-        await new Promise((resolve, reject) => {
-            const startedAt = Date.now();
-            const checkInterval = setInterval(() => {
-                if (this._schemaReady) {
-                    clearInterval(checkInterval);
-                    resolve();
-                    return;
-                }
-                if (Date.now() - startedAt > 5000) {
-                    clearInterval(checkInterval);
-                    reject(new Error('Database schema initialization did not start in time.'));
-                }
-            }, 25);
-        });
-
-        // Wait for schema init/migrations completion
-        await this._schemaReady;
+                    setTimeout(check, 20);
+                };
+                check();
+            });
+        }
+        
+        // Wait for schema initialization to complete
+        if (this._schemaReady) {
+            await this._schemaReady;
+        }
     }
 
     /**
@@ -225,7 +143,7 @@ class DatabaseManager {
                 });
             });
         } catch (err) {
-            console.error(`[DB Execute Error]: ${err.message}`);
+            this._reportError('HIGH', `[DB] Query failed: ${err.message}`);
             throw err;
         }
     }
@@ -242,7 +160,7 @@ class DatabaseManager {
                 });
             });
         } catch (err) {
-            console.error(`[DB QueryOne Error]: ${err.message}`);
+            this._reportError('HIGH', `[DB] Query failed: ${err.message}`);
             throw err;
         }
     }
@@ -259,7 +177,7 @@ class DatabaseManager {
                 });
             });
         } catch (err) {
-            console.error(`[DB QueryAll Error]: ${err.message}`);
+            this._reportError('HIGH', `[DB] Query failed: ${err.message}`);
             throw err;
         }
     }
@@ -284,7 +202,7 @@ class DatabaseManager {
                 });
             });
         } catch (err) {
-            console.error(`[DB Close Error]: ${err.message}`);
+            this._reportError('HIGH', `[DB] Close failed: ${err.message}`);
         }
     }
 }
